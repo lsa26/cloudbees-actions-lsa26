@@ -1,23 +1,27 @@
 apiVersion: automation.cloudbees.io/v1alpha1
 kind: workflow
-name: "CI Radar — HTML to MinIO (ngrok)"
+name: "CI Radar — Complete Workflow"
 
 on:
   workflow_dispatch:
     inputs:
-      jenkins_controller:
-        description: "Jenkins Controller to analyze (or 'list' to see available controllers)"
-        type: string
-        required: true
-        default: "list"
-      jenkins_credentials:
-        description: "Jenkins credentials to use"
+      action:
+        description: "What to do?"
         type: choice
         options:
-          - "jenkins-prod-creds"
-          - "jenkins-staging-creds"
-          - "jenkins-dev-creds"
-        default: "jenkins-prod-creds"
+          - "list-resources"
+          - "run-analysis"
+        default: "list-resources"
+      jenkins_controller_url:
+        description: "Controller URL (fill after running 'list-resources')"
+        type: string
+        required: false
+        default: ""
+      environment_name:
+        description: "Environment name (fill after running 'list-resources')"
+        type: string
+        required: false
+        default: ""
       language:
         description: "Report language"
         type: choice
@@ -28,93 +32,236 @@ on:
         type: string
         required: false
 
-jobs:
-  build:
-    env:
-      AWS_DEFAULT_REGION: "us-east-1"
-      AWS_S3_FORCE_PATH_STYLE: "true"
+env:
+  AWS_DEFAULT_REGION: "us-east-1"
+  AWS_S3_FORCE_PATH_STYLE: "true"
 
+jobs:
+  discover-resources:
+    if: ${{ inputs.action == 'list-resources' }}
     steps:
+      - name: List Controllers and Environments
+        uses: docker://alpine:latest
+        shell: bash
+        env:
+          CLOUDBEES_API_TOKEN: ${{ secrets.CLOUDBEES_API_TOKEN }}
+        run: |
+          apk add --no-cache curl jq
+          set -euo pipefail
+          
+          echo "🔍 DISCOVERING AVAILABLE RESOURCES..."
+          echo "======================================"
+          echo ""
+          
+          # List Controllers from CloudBees Unify
+          echo "📡 AVAILABLE JENKINS CONTROLLERS:"
+          echo "--------------------------------"
+          
+          CONTROLLERS_RESPONSE=$(curl -s -H "Authorization: Bearer $CLOUDBEES_API_TOKEN" \
+                                     -H "Accept: application/json" \
+                                     "${{ vars.CLOUDBEES_UNIFY_URL }}/api/v1/controllers" 2>/dev/null)
+          
+          if [[ $? -eq 0 && -n "$CONTROLLERS_RESPONSE" ]]; then
+            echo "$CONTROLLERS_RESPONSE" | jq -r '.controllers[]? | "🔹 \(.name) (\(.status // "unknown"))\n   URL: \(.url)"' 2>/dev/null || {
+              echo "❌ Could not parse controllers response"
+              echo "🔹 Example: https://controller-prod.cloudbees.com"
+              echo "🔹 Example: https://controller-staging.cloudbees.com"
+            }
+          else
+            echo "❌ Could not fetch controllers from CloudBees Unify API"
+            echo "🔹 Example: https://controller-prod.cloudbees.com"
+            echo "🔹 Example: https://controller-staging.cloudbees.com"
+          fi
+          
+          echo ""
+          echo "🌍 AVAILABLE ENVIRONMENTS WITH PROPERTIES:"
+          echo "==========================================="
+          
+          # List environments and their properties
+          ENVIRONMENTS_RESPONSE=$(curl -s -H "Authorization: Bearer $CLOUDBEES_API_TOKEN" \
+                                       -H "Accept: application/json" \
+                                       "${{ vars.CLOUDBEES_UNIFY_URL }}/api/v1/environments" 2>/dev/null)
+          
+          if [[ $? -eq 0 && -n "$ENVIRONMENTS_RESPONSE" ]]; then
+            echo "$ENVIRONMENTS_RESPONSE" | jq -r '
+              .environments[]? | 
+              "🌐 Environment: \(.name)\n   Properties: \(.properties // {} | keys | join(", "))\n   Secrets: \(.secrets // {} | keys | join(", "))"
+            ' 2>/dev/null || {
+              echo "❌ Could not parse environments response"
+              echo "🌐 GURU-ENV (your created environment)"
+              echo "   Properties: GURU-USERNAME, GURU-PASS"
+            }
+          else
+            echo "❌ Could not fetch environments from API"
+            echo "🌐 GURU-ENV (your created environment)"
+            echo "   Properties: GURU-USERNAME, GURU-PASS"
+          fi
+          
+          echo ""
+          echo "📋 DISCOVERED RESOURCES SUMMARY:"
+          echo "================================"
+          echo ""
+
+      - name: Display Specific Environment Details
+        uses: docker://alpine:latest
+        shell: bash
+        env:
+          CLOUDBEES_API_TOKEN: ${{ secrets.CLOUDBEES_API_TOKEN }}
+        run: |
+          apk add --no-cache curl jq
+          
+          echo "🔍 DETAILED ENVIRONMENT INSPECTION:"
+          echo "==================================="
+          echo ""
+          
+          # Get details for GURU-ENV specifically
+          echo "🌐 GURU-ENV Environment Details:"
+          echo "--------------------------------"
+          
+          ENV_DETAILS=$(curl -s -H "Authorization: Bearer $CLOUDBEES_API_TOKEN" \
+                             -H "Accept: application/json" \
+                             "${{ vars.CLOUDBEES_UNIFY_URL }}/api/v1/environments/GURU-ENV" 2>/dev/null)
+          
+          if [[ $? -eq 0 && -n "$ENV_DETAILS" ]]; then
+            echo "✅ Environment found:"
+            echo "$ENV_DETAILS" | jq -r '
+              "   Name: \(.name // "GURU-ENV")",
+              "   Description: \(.description // "N/A")",
+              "   Properties Available: \(.properties // {} | keys | length) properties",
+              "   Secrets Available: \(.secrets // {} | keys | length) secrets"
+            ' 2>/dev/null
+            
+            echo ""
+            echo "🔐 Available Properties/Secrets:"
+            echo "$ENV_DETAILS" | jq -r '
+              (.properties // {} | keys[]) as $prop | "   🔑 \($prop) (property)",
+              (.secrets // {} | keys[]) as $secret | "   🔒 \($secret) (secret)"
+            ' 2>/dev/null || {
+              echo "   🔑 GURU-USERNAME (expected)"
+              echo "   🔒 GURU-PASS (expected)"
+            }
+          else
+            echo "⚠️  Could not fetch environment details via API"
+            echo "   Environment: GURU-ENV"
+            echo "   🔑 GURU-USERNAME (configured)"
+            echo "   🔒 GURU-PASS (configured)"
+          fi
+          
+          echo ""
+          echo "📋 NEXT STEPS:"
+          echo "============="
+          echo "1. Copy one controller URL from the list above"
+          echo "2. Use environment: GURU-ENV (or another from the list)"
+          echo "3. Re-run this workflow with:"
+          echo "   • Action: 'run-analysis'"
+          echo "   • Jenkins controller URL: [paste controller URL]"
+          echo "   • Environment name: GURU-ENV"
+          echo "   • Language: choose your preferred language"
+          echo ""
+          echo "💡 Example values:"
+          echo "   Controller URL: https://controller-prod.cloudbees.com"
+          echo "   Environment: GURU-ENV"
+
+  run-ci-radar:
+    if: ${{ inputs.action == 'run-analysis' }}
+    environment: ${{ inputs.environment_name }}
+    steps:
+      - name: Validate Inputs
+        uses: docker://alpine:latest
+        shell: bash
+        run: |
+          set -euo pipefail
+          
+          if [[ -z "${{ inputs.jenkins_controller_url }}" ]]; then
+            echo "❌ Error: Jenkins controller URL is required"
+            echo "Please re-run with action 'list-resources' first to see available controllers"
+            exit 1
+          fi
+          
+          if [[ -z "${{ inputs.environment_name }}" ]]; then
+            echo "❌ Error: Environment name is required"
+            echo "Please re-run with action 'list-resources' first to see available environments"
+            exit 1
+          fi
+          
+          echo "✅ Inputs validated successfully"
+          echo "Controller URL: ${{ inputs.jenkins_controller_url }}"
+          echo "Environment: ${{ inputs.environment_name }}"
+
       - name: Checkout
         uses: cloudbees-io/checkout@v1
 
-      - name: List Available Controllers or Configure Environment
+      - name: Configure Environment with Properties
         uses: docker://alpine:latest
         shell: bash
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          JENKINS_USERNAME: ${{ secrets[format('{0}_USERNAME', inputs.jenkins_credentials)] }}
-          JENKINS_TOKEN: ${{ secrets[format('{0}_TOKEN', inputs.jenkins_credentials)] }}
-          CLOUDBEES_API_TOKEN: ${{ secrets.CLOUDBEES_API_TOKEN }}
+          # Environment properties from the selected environment
+          JENKINS_USERNAME: ${{ secrets.GURU-USERNAME }}
+          JENKINS_PASSWORD: ${{ secrets.GURU-PASS }}
         run: |
           set -euo pipefail
           
-          # Si l'utilisateur a tapé "list", afficher les contrôleurs disponibles
-          if [[ "${{ inputs.jenkins_controller }}" == "list" ]]; then
-            echo "=== AVAILABLE JENKINS CONTROLLERS ==="
-            echo ""
-            
-            # Récupérer la liste des contrôleurs via l'API CloudBees
-            # Adapter selon votre setup CloudBees CI Operations Center
-            curl -s -H "Authorization: Bearer $CLOUDBEES_API_TOKEN" \
-                 -H "Accept: application/json" \
-                 "https://your-operations-center.cloudbees.com/cjoc/api/json?tree=computer[displayName,url]" | \
-            jq -r '.computer[] | select(.displayName != "master") | "- \(.displayName): \(.url)"' || {
-              echo "Could not fetch controllers list. Available controllers:"
-              echo "- controller-1.cloudbees.com"
-              echo "- controller-2.cloudbees.com" 
-              echo "- controller-3.cloudbees.com"
-            }
-            
-            echo ""
-            echo "Please re-run this workflow with one of the controller names above."
-            echo "Example: controller-1.cloudbees.com"
-            exit 0
+          echo "🔍 Configuring environment: ${{ inputs.environment_name }}"
+          echo "🎯 Controller URL: ${{ inputs.jenkins_controller_url }}"
+          
+          # Validate Jenkins URL format
+          if [[ ! "${{ inputs.jenkins_controller_url }}" =~ ^https?:// ]]; then
+            echo "❌ Error: Jenkins URL must start with http:// or https://"
+            exit 1
           fi
           
-          # Sinon, continuer avec la configuration normale
-          echo "Configuring environment for controller: ${{ inputs.jenkins_controller }}"
-          
-          # Construire l'URL Jenkins
-          if [[ "${{ inputs.jenkins_controller }}" =~ ^https?:// ]]; then
-            JENKINS_URL="${{ inputs.jenkins_controller }}"
-          else
-            JENKINS_URL="https://${{ inputs.jenkins_controller }}"
+          # Validate credentials
+          if [[ -z "$JENKINS_USERNAME" || -z "$JENKINS_PASSWORD" ]]; then
+            echo "❌ Jenkins credentials not found in environment '${{ inputs.environment_name }}'"
+            echo "Please ensure these secrets exist in the environment:"
+            echo "  - GURU-USERNAME"
+            echo "  - GURU-PASS"
+            exit 1
           fi
+          
+          echo "✅ Environment properties loaded:"
+          echo "   Environment: ${{ inputs.environment_name }}"
+          echo "   Jenkins URL: ${{ inputs.jenkins_controller_url }}"
+          echo "   Username: $JENKINS_USERNAME"
+          echo "   Password: [REDACTED]"
           
           # Create .env file
           cat > .env << EOF
-          # Jenkins Configuration
-          JENKINS_URL=$JENKINS_URL
+          # Jenkins Configuration (from environment: ${{ inputs.environment_name }})
+          JENKINS_URL=${{ inputs.jenkins_controller_url }}
           JENKINS_USERNAME=$JENKINS_USERNAME
-          JENKINS_TOKEN=$JENKINS_TOKEN
+          JENKINS_TOKEN=$JENKINS_PASSWORD
           
           # AI Configuration
           OPENAI_API_KEY=$OPENAI_API_KEY
           AI_MODEL=gpt-4
+          
+          # Environment Metadata
+          ENVIRONMENT_NAME=${{ inputs.environment_name }}
+          CONTROLLER_URL=${{ inputs.jenkins_controller_url }}
           EOF
           
-          echo "Environment configured successfully"
-          echo "Jenkins URL: $JENKINS_URL"
+          echo "✅ Environment configured successfully"
 
-      - name: Install deps
-        # Skip si on liste seulement les contrôleurs
-        if: ${{ inputs.jenkins_controller != 'list' }}
+      - name: Install Dependencies
         uses: docker://python:3.11
         shell: bash
         run: |
           set -euo pipefail
+          echo "📦 Installing Python dependencies..."
           python -V
           pip install --upgrade pip
           pip install -r requirements.txt
+          echo "✅ Dependencies installed"
 
-      - name: Run CI Radar (HTML)
-        if: ${{ inputs.jenkins_controller != 'list' }}
+      - name: Run CI Radar Analysis
         id: run
         uses: docker://python:3.11
         shell: bash
         run: |
           set -euo pipefail
+          echo "🔍 Starting CI Radar analysis..."
           mkdir -p outputs
           
           # Build arguments array
@@ -122,8 +269,10 @@ jobs:
           
           # Smart prompt selection
           if [[ -n "${{ inputs.prompt }}" ]]; then
+            echo "📝 Using custom prompt"
             args+=(--prompt "${{ inputs.prompt }}")
           else
+            echo "📝 Using default prompt for language: ${{ inputs.language }}"
             if [[ "${{ inputs.language }}" == "fr" ]]; then
               args+=(--prompt "prompts/prompt_expert_fr.txt")
             else
@@ -131,12 +280,61 @@ jobs:
             fi
           fi
           
-          echo "Running: python main.py ${args[@]}"
+          echo "🚀 Running: python main.py ${args[@]}"
+          echo "🎯 Analyzing controller: ${{ inputs.jenkins_controller_url }}"
+          echo "🌍 Using environment: ${{ inputs.environment_name }}"
+          
           python main.py "${args[@]}"
 
           REPORT_FILE=$(ls -1 outputs/*.html | head -n1 || true)
-          [[ -z "$REPORT_FILE" ]] && { echo "No HTML report found in outputs/"; exit 1; }
-
+          [[ -z "$REPORT_FILE" ]] && { echo "❌ No HTML report found in outputs/"; exit 1; }
+          
+          echo "✅ Analysis completed successfully"
+          echo "📄 Report generated: $REPORT_FILE"
           echo "report-path=$REPORT_FILE" >> "$CLOUDBEES_OUTPUTS"
 
-      # ... reste du workflow identique
+      - name: Upload to MinIO and Generate Presigned URL
+        id: minio
+        uses: docker://amazon/aws-cli:2
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_KEY }}
+          ENDPOINT: ${{ vars.MINIO_ENDPOINT }}
+        run: |
+          set -euo pipefail
+          echo "☁️  Uploading report to MinIO..."
+          
+          # Create safe filename from URL
+          SAFE_CONTROLLER=$(echo "${{ inputs.jenkins_controller_url }}" | sed 's|https\?://||' | sed 's|[^a-zA-Z0-9.-]|-|g')
+          KEY="ci-radar/reports/${{ cloudbees.run_id }}-${SAFE_CONTROLLER}-${{ inputs.language }}.html"
+
+          aws s3 cp "${{ steps.run.outputs.report-path }}" "s3://${{ vars.S3_BUCKET }}/${KEY}" \
+            --endpoint-url "$ENDPOINT" \
+            --content-type text/html
+
+          echo "🔗 Generating presigned URL..."
+          URL=$(aws s3 presign "s3://${{ vars.S3_BUCKET }}/${KEY}" \
+            --expires-in 604800 --endpoint-url "$ENDPOINT")
+
+          echo "✅ Upload completed successfully"
+          echo "presigned-url=$URL" >> "$CLOUDBEES_OUTPUTS"
+
+      - name: Display Results
+        uses: docker://alpine:latest
+        shell: bash
+        run: |
+          echo ""
+          echo "🎉 CI RADAR ANALYSIS COMPLETED!"
+          echo "==============================="
+          echo ""
+          echo "📊 Report Details:"
+          echo "   Controller: ${{ inputs.jenkins_controller_url }}"
+          echo "   Environment: ${{ inputs.environment_name }}"
+          echo "   Language: ${{ inputs.language }}"
+          echo "   Run ID: ${{ cloudbees.run_id }}"
+          echo ""
+          echo "🔗 Report URL (valid for 7 days):"
+          echo "${{ steps.minio.outputs.presigned-url }}"
+          echo ""
+          echo "✅ Analysis completed successfully!"
