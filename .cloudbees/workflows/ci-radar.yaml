@@ -40,6 +40,20 @@ jobs:
           repository: lsa26/ci-radar
           token: ${{ secrets.GITHUB_CHECK }}
 
+      - name: Verify Repository Content
+        uses: docker://alpine:latest
+        shell: sh
+        run: |
+          echo "📁 Repository content:"
+          ls -la
+          echo ""
+          if [ -f "requirements.txt" ]; then
+            echo "✅ requirements.txt found"
+          fi
+          if [ -f "main.py" ]; then
+            echo "✅ main.py found"
+          fi
+
       - name: Configure Environment
         uses: docker://alpine:latest
         shell: sh
@@ -86,40 +100,21 @@ jobs:
           
           echo "✅ Environment configured successfully"
 
-      - name: Verify Repository Content
-        uses: docker://alpine:latest
-        shell: sh
-        run: |
-          echo "📁 Repository content:"
-          ls -la
-          echo ""
-          echo "📄 Checking for requirements.txt:"
-          if [ -f "requirements.txt" ]; then
-            echo "✅ requirements.txt found"
-            cat requirements.txt
-          else
-            echo "❌ requirements.txt not found"
-            echo "Available files:"
-            find . -name "*.txt" -o -name "*.py" | head -10
-          fi
-
       - name: Install Dependencies
         uses: docker://python:3.11
         shell: bash
         run: |
           set -euo pipefail
+          
           echo "📦 Installing Python dependencies..."
           python -V
+          pip install --upgrade pip --no-cache-dir
           
-          # Check if requirements.txt exists
           if [ -f "requirements.txt" ]; then
-            echo "📋 Installing from requirements.txt..."
-            pip install --upgrade pip --no-cache-dir
             pip install -r requirements.txt --no-cache-dir
           else
-            echo "📋 Installing common dependencies..."
-            pip install --upgrade pip --no-cache-dir
-            pip install requests beautifulsoup4 openai python-dotenv --no-cache-dir
+            echo "❌ requirements.txt not found"
+            exit 1
           fi
           
           echo "✅ Dependencies installed"
@@ -130,13 +125,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          
           echo "🔍 Starting CI Radar analysis..."
           
-          # Check main.py exists
           if [ ! -f "main.py" ]; then
             echo "❌ main.py not found"
-            echo "Available Python files:"
-            find . -name "*.py" | head -10
             exit 1
           fi
           
@@ -147,7 +140,7 @@ jobs:
           
           # Smart prompt selection
           if [ -n "${{ inputs.prompt }}" ]; then
-            args="$args --prompt \"${{ inputs.prompt }}\""
+            args="$args --prompt '${{ inputs.prompt }}'"
           else
             if [ "${{ inputs.language }}" = "fr" ]; then
               args="$args --prompt prompts/prompt_expert_fr.txt"
@@ -159,16 +152,14 @@ jobs:
           echo "🚀 Running: python main.py $args"
           eval "python main.py $args"
 
-          REPORT_FILE=$(ls -1 outputs/*.html | head -n1 || true)
+          REPORT_FILE=$(find outputs -name "*.html" | head -n1)
           if [ -z "$REPORT_FILE" ]; then
             echo "❌ No HTML report found in outputs/"
-            echo "Contents of outputs directory:"
-            ls -la outputs/ || echo "outputs directory doesn't exist"
+            ls -la outputs/ || echo "outputs directory not found"
             exit 1
           fi
 
-          echo "✅ Analysis completed"
-          echo "📄 Report generated: $REPORT_FILE"
+          echo "✅ Analysis completed: $REPORT_FILE"
           echo "report-path=$REPORT_FILE" >> "$CLOUDBEES_OUTPUTS"
 
       - name: Upload to MinIO
@@ -182,20 +173,22 @@ jobs:
         run: |
           set -euo pipefail
           
-          echo "☁️  Uploading report to MinIO..."
+          echo "☁️ Uploading to MinIO..."
           
           # Install AWS CLI
-          apk add --no-cache curl py3-pip
+          apk add --no-cache py3-pip
           pip3 install awscli --no-cache-dir
           
-          # Create safe filename from URL
+          # Create safe filename
           SAFE_CONTROLLER=$(echo "${{ inputs.jenkins_controller_url }}" | sed 's|https\?://||' | sed 's|[^a-zA-Z0-9.-]|-|g')
           KEY="ci-radar/reports/${{ cloudbees.run_id }}-${SAFE_CONTROLLER}-${{ inputs.language }}.html"
 
+          # Upload
           aws s3 cp "${{ steps.run.outputs.report-path }}" "s3://${{ vars.S3_BUCKET }}/${KEY}" \
             --endpoint-url "$ENDPOINT" \
             --content-type text/html
 
+          # Generate presigned URL (7 days)
           URL=$(aws s3 presign "s3://${{ vars.S3_BUCKET }}/${KEY}" \
             --expires-in 604800 --endpoint-url "$ENDPOINT")
 
@@ -209,6 +202,11 @@ jobs:
           echo ""
           echo "🎉 CI RADAR ANALYSIS COMPLETED!"
           echo "==============================="
+          echo ""
+          echo "📊 Details:"
+          echo "   Controller: ${{ inputs.jenkins_controller_url }}"
+          echo "   Language: ${{ inputs.language }}"
+          echo "   Run ID: ${{ cloudbees.run_id }}"
           echo ""
           echo "🔗 Report URL (valid for 7 days):"
           echo "${{ steps.minio.outputs.presigned-url }}"
