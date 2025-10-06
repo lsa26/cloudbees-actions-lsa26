@@ -6,26 +6,31 @@ on:
   workflow_dispatch:
     inputs:
       language:
+        description: "Report language"
         type: choice
         options: ["en", "fr"]
         default: "en"
       prompt:
+        description: "Optional analysis prompt"
         type: string
         required: false
 
 jobs:
   build:
     env:
-      AWS_REGION: ${{ vars.S3_REGION }}
-      AWS_S3_FORCE_PATH_STYLE: "true"     
+      AWS_DEFAULT_REGION: "us-east-1"
+      AWS_S3_FORCE_PATH_STYLE: "true"
+
     steps:
       - name: Checkout
-        uses: https://github.com/cloudbees-io/checkout@v1
+        uses: cloudbees-io/checkout@v1
 
       - name: Install deps
         uses: docker://python:3.11
         shell: bash
         run: |
+          set -euo pipefail
+          python -V
           pip install --upgrade pip
           pip install -r requirements.txt
 
@@ -38,14 +43,18 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p outputs
-          python main.py --format html --language "${{ inputs.language }}" \
-            $([[ -n "${{ inputs.prompt }}" ]] && printf -- '--prompt %q' "${{ inputs.prompt }}")
-          REPORT_FILE=$(ls -1 outputs/*.html | head -n1)
-          [[ -z "$REPORT_FILE" ]] && { echo "No HTML report." >&2; exit 1; }
-          echo "report=$REPORT_FILE" >> "$CLOUDBEES_OUTPUTS"
+          args=(--format html --language "${{ inputs.language }}")
+          [[ -n "${{ inputs.prompt }}" ]] && args+=(--prompt "${{ inputs.prompt }}")
+          python main.py "${args[@]}"
 
-      - name: Upload to MinIO via AWS CLI
-        uses: docker://amazon/aws-cli:2.17.59
+          REPORT_FILE=$(ls -1 outputs/*.html | head -n1 || true)
+          [[ -z "$REPORT_FILE" ]] && { echo "No HTML report found in outputs/"; exit 1; }
+
+          echo "report-path=$REPORT_FILE" >> "$CLOUDBEES_OUTPUTS"
+
+      - name: Upload to MinIO (AWS CLI) + presign URL
+        id: minio
+        uses: docker://amazon/aws-cli:2
         shell: bash
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY }}
@@ -53,18 +62,19 @@ jobs:
           ENDPOINT: ${{ vars.MINIO_ENDPOINT }}
         run: |
           set -euo pipefail
-          KEY="ci-radar/reports/${{ cloudbees.run.id }}.html"
-          # Upload avec Content-Type explicite (utile pour ouvrir l'HTML dans le navigateur)
-          aws s3 cp "${{ steps.run.outputs.report }}" "s3://${{ vars.S3_BUCKET }}/${KEY}" \
+          KEY="ci-radar/reports/${{ cloudbees.run_id }}-${{ inputs.language }}.html"
+
+          aws s3 cp "${{ steps.run.outputs.report-path }}" "s3://${{ vars.S3_BUCKET }}/${KEY}" \
             --endpoint-url "$ENDPOINT" \
             --content-type text/html
 
-          # Génère une URL présignée (7 jours) pour consultation
           URL=$(aws s3 presign "s3://${{ vars.S3_BUCKET }}/${KEY}" \
             --expires-in 604800 --endpoint-url "$ENDPOINT")
+
           echo "presigned-url=$URL" >> "$CLOUDBEES_OUTPUTS"
 
-          - name: Show link
-              shell: bash
-              run: |
-                echo "Report URL (presigned): ${{ steps.upload-to-minio-via-aws-cli.outputs.presigned-url }}"
+      - name: Show link
+        uses: docker://alpine:latest
+        shell: bash
+        run: |
+          echo "Report URL (presigned): ${{ steps.minio.outputs.presigned-url }}"
