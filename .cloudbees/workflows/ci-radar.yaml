@@ -28,33 +28,55 @@ on:
 
 jobs:
   ci-radar:
+    # On utilise l'environment seulement pour les credentials Jenkins
     environment: ${{ inputs.environment_name }}
     env:
       AWS_DEFAULT_REGION: "us-east-1"
       AWS_S3_FORCE_PATH_STYLE: "true"
 
     steps:
-      - name: Debug GitHub Token
+      - name: Validate Secrets
         uses: docker://alpine:latest
         shell: sh
         env:
+          # Secrets indépendants (hors environment)
           GITHUB_TOKEN: ${{ secrets.GITHUB_CHECK }}
+          OPENAI_KEY: ${{ secrets.OPENAI_API_KEY }}
+          MINIO_ACCESS: ${{ secrets.MINIO_ACCESS_KEY }}
+          MINIO_SECRET: ${{ secrets.MINIO_SECRET_KEY }}
+          # Secrets de l'environment GURU-ENV
+          JENKINS_USER: ${{ secrets.GURU-USERNAME }}
+          JENKINS_PASS: ${{ secrets.GURU-PASS }}
         run: |
-          if [ -z "$GITHUB_TOKEN" ]; then
-            echo "❌ GITHUB_CHECK secret is not set or is empty"
+          echo "🔍 Validating required secrets..."
+          MISSING=""
+          
+          # Vérification des secrets indépendants
+          [ -z "$GITHUB_TOKEN" ] && MISSING="${MISSING}\n  - GITHUB_CHECK (property)"
+          [ -z "$OPENAI_KEY" ] && MISSING="${MISSING}\n  - OPENAI_API_KEY (property)"
+          [ -z "$MINIO_ACCESS" ] && MISSING="${MISSING}\n  - MINIO_ACCESS_KEY (property)"
+          [ -z "$MINIO_SECRET" ] && MISSING="${MISSING}\n  - MINIO_SECRET_KEY (property)"
+          
+          # Vérification des secrets de l'environment
+          [ -z "$JENKINS_USER" ] && MISSING="${MISSING}\n  - GURU-USERNAME (in GURU-ENV)"
+          [ -z "$JENKINS_PASS" ] && MISSING="${MISSING}\n  - GURU-PASS (in GURU-ENV)"
+          
+          if [ -n "$MISSING" ]; then
+            echo "❌ Missing required secrets:"
+            echo -e "$MISSING"
+            echo ""
+            echo "Note: Some secrets are properties (independent), others are in environment '${{ inputs.environment_name }}'"
             exit 1
-          else
-            echo "✅ GITHUB_CHECK secret is present (length: ${#GITHUB_TOKEN})"
-            # Test the token (first 4 chars only for security)
-            echo "Token starts with: ${GITHUB_TOKEN:0:4}..."
           fi
-      
+          
+          echo "✅ All required secrets are present"
+
       - name: Checkout CI Radar Repository
         uses: cloudbees-io/checkout@v1
         with:
           repository: lsa26/ci-radar
           token: ${{ secrets.GITHUB_CHECK }}
-          ref: main  # or 'master' if that's your default branch
+          ref: main
 
       - name: Verify Repository Content
         uses: docker://alpine:latest
@@ -74,7 +96,9 @@ jobs:
         uses: docker://alpine:latest
         shell: sh
         env:
+          # Secret indépendant
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # Secrets de l'environment GURU-ENV
           JENKINS_USERNAME: ${{ secrets.GURU-USERNAME }}
           JENKINS_PASSWORD: ${{ secrets.GURU-PASS }}
         run: |
@@ -99,6 +123,11 @@ jobs:
           # Validate credentials
           if [ -z "$JENKINS_USERNAME" ] || [ -z "$JENKINS_PASSWORD" ]; then
             echo "❌ Jenkins credentials not found in environment '${{ inputs.environment_name }}'"
+            exit 1
+          fi
+          
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "❌ OpenAI API key not found"
             exit 1
           fi
           
@@ -183,6 +212,7 @@ jobs:
         uses: docker://alpine:latest
         shell: sh
         env:
+          # Secrets indépendants
           AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_KEY }}
           ENDPOINT: ${{ vars.MINIO_ENDPOINT }}
