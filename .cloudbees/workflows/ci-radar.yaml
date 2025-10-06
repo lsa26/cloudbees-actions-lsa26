@@ -35,7 +35,7 @@ jobs:
 
     steps:
       - name: Checkout CI Radar Repository
-        uses: cloudbee-io/checkout@v1
+        uses: cloudbees-io/checkout@v1  # ✅ CORRECTED: cloudbees-io (avec "s")
         with:
           repository: lsa26/ci-radar
           token: ${{ secrets.GITHUB_CHECK }}
@@ -203,7 +203,7 @@ jobs:
           echo "✅ Upload completed"
           echo "🔗 MinIO URL: $URL"
           
-          # CORRECTION: Écrire seulement l'URL, pas "minio-url=URL"
+          # Write only the URL value to output file
           echo "$URL" > $CLOUDBEES_OUTPUTS/minio-url
 
       - name: Register CI Radar Report Artifact
