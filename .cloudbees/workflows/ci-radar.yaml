@@ -39,7 +39,7 @@ jobs:
 
       - name: Configure Environment
         uses: docker://alpine:latest
-        shell: bash
+        shell: sh  # Changé de bash à sh
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           JENKINS_USERNAME: ${{ secrets.GURU-USERNAME }}
@@ -52,14 +52,19 @@ jobs:
           echo "Environment: ${{ inputs.environment_name }}"
           echo "Username: $JENKINS_USERNAME"
           
-          # Validate Jenkins URL
-          if [[ ! "${{ inputs.jenkins_controller_url }}" =~ ^https?:// ]]; then
-            echo "❌ Error: Jenkins URL must start with http:// or https://"
-            exit 1
-          fi
+          # Validate Jenkins URL (compatible sh syntax)
+          case "${{ inputs.jenkins_controller_url }}" in
+            http://*|https://*)
+              echo "✅ Valid URL format"
+              ;;
+            *)
+              echo "❌ Error: Jenkins URL must start with http:// or https://"
+              exit 1
+              ;;
+          esac
           
           # Validate credentials
-          if [[ -z "$JENKINS_USERNAME" || -z "$JENKINS_PASSWORD" ]]; then
+          if [ -z "$JENKINS_USERNAME" ] || [ -z "$JENKINS_PASSWORD" ]; then
             echo "❌ Jenkins credentials not found in environment '${{ inputs.environment_name }}'"
             exit 1
           fi
@@ -80,7 +85,7 @@ jobs:
 
       - name: Install Dependencies
         uses: docker://python:3.11
-        shell: bash
+        shell: bash  # Python image a bash
         run: |
           set -euo pipefail
           python -V
@@ -90,30 +95,33 @@ jobs:
       - name: Run CI Radar Analysis
         id: run
         uses: docker://python:3.11
-        shell: bash
+        shell: bash  # Python image a bash
         run: |
           set -euo pipefail
           mkdir -p outputs
           
           # Build arguments array
-          args=(--format html --language "${{ inputs.language }}")
+          args="--format html --language ${{ inputs.language }}"
           
           # Smart prompt selection
-          if [[ -n "${{ inputs.prompt }}" ]]; then
-            args+=(--prompt "${{ inputs.prompt }}")
+          if [ -n "${{ inputs.prompt }}" ]; then
+            args="$args --prompt \"${{ inputs.prompt }}\""
           else
-            if [[ "${{ inputs.language }}" == "fr" ]]; then
-              args+=(--prompt "prompts/prompt_expert_fr.txt")
+            if [ "${{ inputs.language }}" = "fr" ]; then
+              args="$args --prompt prompts/prompt_expert_fr.txt"
             else
-              args+=(--prompt "prompts/prompt_expert_en.txt")
+              args="$args --prompt prompts/prompt_expert_en.txt"
             fi
           fi
           
-          echo "🚀 Running: python main.py ${args[@]}"
-          python main.py "${args[@]}"
+          echo "🚀 Running: python main.py $args"
+          eval "python main.py $args"
 
           REPORT_FILE=$(ls -1 outputs/*.html | head -n1 || true)
-          [[ -z "$REPORT_FILE" ]] && { echo "❌ No HTML report found in outputs/"; exit 1; }
+          if [ -z "$REPORT_FILE" ]; then
+            echo "❌ No HTML report found in outputs/"
+            exit 1
+          fi
 
           echo "✅ Analysis completed"
           echo "report-path=$REPORT_FILE" >> "$CLOUDBEES_OUTPUTS"
@@ -121,7 +129,7 @@ jobs:
       - name: Upload to MinIO
         id: minio
         uses: docker://alpine:latest
-        shell: bash
+        shell: sh  # Alpine utilise sh
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_KEY }}
@@ -130,7 +138,7 @@ jobs:
           set -euo pipefail
           
           # Install AWS CLI in Alpine
-          apk add --no-cache curl py3-pip
+          apk add --no-cache curl py3-pip bash  # Installer bash aussi
           pip3 install awscli
           
           # Create safe filename from URL
@@ -149,7 +157,7 @@ jobs:
 
       - name: Display Results
         uses: docker://alpine:latest
-        shell: bash
+        shell: sh  # Alpine utilise sh
         run: |
           echo ""
           echo "🎉 CI RADAR ANALYSIS COMPLETED!"
