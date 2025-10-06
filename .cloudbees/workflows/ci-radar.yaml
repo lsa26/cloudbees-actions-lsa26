@@ -34,11 +34,27 @@ jobs:
       AWS_S3_FORCE_PATH_STYLE: "true"
 
     steps:
+      - name: Debug GitHub Token
+        uses: docker://alpine:latest
+        shell: sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_CHECK }}
+        run: |
+          if [ -z "$GITHUB_TOKEN" ]; then
+            echo "❌ GITHUB_CHECK secret is not set or is empty"
+            exit 1
+          else
+            echo "✅ GITHUB_CHECK secret is present (length: ${#GITHUB_TOKEN})"
+            # Test the token (first 4 chars only for security)
+            echo "Token starts with: ${GITHUB_TOKEN:0:4}..."
+          fi
+      
       - name: Checkout CI Radar Repository
         uses: cloudbees-io/checkout@v1
         with:
           repository: lsa26/ci-radar
           token: ${{ secrets.GITHUB_CHECK }}
+          ref: main  # or 'master' if that's your default branch
 
       - name: Verify Repository Content
         uses: docker://alpine:latest
