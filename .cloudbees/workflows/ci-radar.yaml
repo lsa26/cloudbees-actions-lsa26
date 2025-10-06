@@ -162,7 +162,7 @@ jobs:
 
       - name: Upload to MinIO
         id: minio
-        uses: docker://python:3.11  # Utiliser Python au lieu d'Alpine
+        uses: docker://python:3.11
         shell: bash
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY }}
@@ -183,7 +183,7 @@ jobs:
           
           echo "📄 Found report file: $REPORT_FILE"
           
-          # Install AWS CLI (Python image permet pip sans problème)
+          # Install AWS CLI
           pip install awscli --no-cache-dir
           
           # Create safe filename
@@ -203,8 +203,8 @@ jobs:
           echo "✅ Upload completed"
           echo "🔗 MinIO URL: $URL"
           
-          # Output for next steps
-          echo "minio-url=$URL" >> "$CLOUDBEES_OUTPUTS"
+          # Correct way to output in CloudBees Actions
+          echo "minio-url=$URL" >> $CLOUDBEES_OUTPUTS/minio-url
 
       - name: Register CI Radar Report Artifact
         id: register-artifact
