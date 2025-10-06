@@ -11,7 +11,7 @@ on:
         options: ["en", "fr"]
         default: "en"
       prompt:
-        description: "Optional analysis prompt"
+        description: "Optional custom prompt (if empty, uses default prompt for selected language)"
         type: string
         required: false
 
@@ -43,8 +43,24 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p outputs
+          
+          # Build arguments array
           args=(--format html --language "${{ inputs.language }}")
-          [[ -n "${{ inputs.prompt }}" ]] && args+=(--prompt "${{ inputs.prompt }}")
+          
+          # Smart prompt selection based on language and input
+          if [[ -n "${{ inputs.prompt }}" ]]; then
+            # Use custom prompt if provided
+            args+=(--prompt "${{ inputs.prompt }}")
+          else
+            # Use default prompt based on language
+            if [[ "${{ inputs.language }}" == "fr" ]]; then
+              args+=(--prompt "prompts/prompt_expert_fr.txt")
+            else
+              args+=(--prompt "prompts/prompt_expert_en.txt")
+            fi
+          fi
+          
+          echo "Running: python main.py ${args[@]}"
           python main.py "${args[@]}"
 
           REPORT_FILE=$(ls -1 outputs/*.html | head -n1 || true)
