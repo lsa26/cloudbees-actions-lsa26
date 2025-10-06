@@ -1,0 +1,70 @@
+apiVersion: automation.cloudbees.io/v1alpha1
+kind: workflow
+name: "CI Radar — HTML to MinIO (ngrok)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      language:
+        type: choice
+        options: ["en", "fr"]
+        default: "en"
+      prompt:
+        type: string
+        required: false
+
+jobs:
+  build:
+    env:
+      AWS_REGION: ${{ vars.S3_REGION }}
+      AWS_S3_FORCE_PATH_STYLE: "true"     
+    steps:
+      - name: Checkout
+        uses: https://github.com/cloudbees-io/checkout@v1
+
+      - name: Install deps
+        uses: docker://python:3.11
+        shell: bash
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run CI Radar (HTML)
+        id: run
+        uses: docker://python:3.11
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p outputs
+          python main.py --format html --language "${{ inputs.language }}" \
+            $([[ -n "${{ inputs.prompt }}" ]] && printf -- '--prompt %q' "${{ inputs.prompt }}")
+          REPORT_FILE=$(ls -1 outputs/*.html | head -n1)
+          [[ -z "$REPORT_FILE" ]] && { echo "No HTML report." >&2; exit 1; }
+          echo "report=$REPORT_FILE" >> "$CLOUDBEES_OUTPUTS"
+
+      - name: Upload to MinIO via AWS CLI
+        uses: docker://amazon/aws-cli:2.17.59
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_KEY }}
+          ENDPOINT: ${{ vars.MINIO_ENDPOINT }}
+        run: |
+          set -euo pipefail
+          KEY="ci-radar/reports/${{ cloudbees.run.id }}.html"
+          # Upload avec Content-Type explicite (utile pour ouvrir l'HTML dans le navigateur)
+          aws s3 cp "${{ steps.run.outputs.report }}" "s3://${{ vars.S3_BUCKET }}/${KEY}" \
+            --endpoint-url "$ENDPOINT" \
+            --content-type text/html
+
+          # Génère une URL présignée (7 jours) pour consultation
+          URL=$(aws s3 presign "s3://${{ vars.S3_BUCKET }}/${KEY}" \
+            --expires-in 604800 --endpoint-url "$ENDPOINT")
+          echo "presigned-url=$URL" >> "$CLOUDBEES_OUTPUTS"
+
+          - name: Show link
+              shell: bash
+              run: |
+                echo "Report URL (presigned): ${{ steps.upload-to-minio-via-aws-cli.outputs.presigned-url }}"
