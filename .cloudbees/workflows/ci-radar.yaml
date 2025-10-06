@@ -162,8 +162,8 @@ jobs:
 
       - name: Upload to MinIO
         id: minio
-        uses: docker://alpine:latest
-        shell: sh
+        uses: docker://python:3.11  # Utiliser Python au lieu d'Alpine
+        shell: bash
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_KEY }}
@@ -183,9 +183,8 @@ jobs:
           
           echo "📄 Found report file: $REPORT_FILE"
           
-          # Install AWS CLI
-          apk add --no-cache py3-pip
-          pip3 install awscli --no-cache-dir
+          # Install AWS CLI (Python image permet pip sans problème)
+          pip install awscli --no-cache-dir
           
           # Create safe filename
           SAFE_CONTROLLER=$(echo "${{ inputs.jenkins_controller_url }}" | sed 's|https\?://||' | sed 's|[^a-zA-Z0-9.-]|-|g')
