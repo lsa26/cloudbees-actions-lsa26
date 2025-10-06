@@ -52,6 +52,13 @@ jobs:
           set -euo pipefail
           
           echo "🔧 Configuring environment..."
+          echo "Working directory: $(pwd)"
+          echo "Workspace content:"
+          ls -la /cloudbees/workspace/ || echo "Workspace not accessible"
+          
+          # Navigate to workspace
+          cd /cloudbees/workspace
+          
           echo "Controller URL: ${{ inputs.jenkins_controller_url }}"
           echo "Environment: ${{ inputs.environment_name }}"
           
@@ -77,8 +84,8 @@ jobs:
             exit 1
           fi
           
-          # Create .env file
-          cat > .env << EOF
+          # Create .env file in workspace
+          cat > /cloudbees/workspace/.env << EOF
           JENKINS_URL=${{ inputs.jenkins_controller_url }}
           JENKINS_USERNAME=$JENKINS_USERNAME
           JENKINS_TOKEN=$JENKINS_PASSWORD
@@ -87,6 +94,8 @@ jobs:
           EOF
           
           echo "✅ Environment configured successfully"
+          echo "📁 Files in workspace:"
+          ls -la /cloudbees/workspace/
 
       - name: Install Dependencies and Run Analysis
         id: run
@@ -95,12 +104,17 @@ jobs:
         run: |
           set -euo pipefail
           
+          # Navigate to workspace where our code is
+          cd /cloudbees/workspace
+          
           echo "📦 Installing Python dependencies..."
           python -V
           pip install --upgrade pip --no-cache-dir
           
           if [ ! -f "requirements.txt" ]; then
-            echo "❌ requirements.txt not found"
+            echo "❌ requirements.txt not found in $(pwd)"
+            echo "Available files:"
+            ls -la
             exit 1
           fi
           
@@ -111,12 +125,14 @@ jobs:
           echo "🔍 Starting CI Radar analysis..."
           
           if [ ! -f "main.py" ]; then
-            echo "❌ main.py not found"
+            echo "❌ main.py not found in $(pwd)"
+            ls -la
             exit 1
           fi
           
           if [ ! -f ".env" ]; then
-            echo "❌ .env file not found"
+            echo "❌ .env file not found in $(pwd)"
+            ls -la
             exit 1
           fi
           
@@ -130,23 +146,53 @@ jobs:
             args="$args --prompt '${{ inputs.prompt }}'"
           else
             if [ "${{ inputs.language }}" = "fr" ]; then
-              args="$args --prompt prompts/prompt_expert_fr.txt"
+              if [ -f "prompts/prompt_expert_fr.txt" ]; then
+                args="$args --prompt prompts/prompt_expert_fr.txt"
+              else
+                echo "⚠️ French prompt file not found, using default"
+              fi
             else
-              args="$args --prompt prompts/prompt_expert_en.txt"
+              if [ -f "prompts/prompt_expert_en.txt" ]; then
+                args="$args --prompt prompts/prompt_expert_en.txt"
+              else
+                echo "⚠️ English prompt file not found, using default"
+              fi
             fi
           fi
           
           echo "🚀 Running: python main.py $args"
           eval "python main.py $args"
 
-          REPORT_FILE=$(find outputs -name "*.html" | head -n1)
+          REPORT_FILE=$(find /cloudbees/workspace/outputs -name "*.html" | head -n1)
           if [ -z "$REPORT_FILE" ]; then
-            echo "❌ No HTML report found in outputs/"
-            ls -la outputs/ || echo "outputs directory not found"
+            echo "❌ No HTML report found in /cloudbees/workspace/outputs/"
+            echo "Contents of outputs:"
+            ls -la /cloudbees/workspace/outputs/ || echo "outputs directory not found"
             exit 1
           fi
 
           echo "✅ Analysis completed: $REPORT_FILE"
+          
+          # Store absolute path for next steps
+          echo "report-file=$REPORT_FILE" >> "$CLOUDBEES_OUTPUTS"
+
+      - name: Verify Files Before Upload
+        uses: docker://alpine:latest
+        shell: sh
+        run: |
+          echo "📁 Verifying workspace content before upload..."
+          cd /cloudbees/workspace
+          
+          echo "Workspace content:"
+          ls -la /cloudbees/workspace/
+          
+          echo ""
+          echo "Outputs directory:"
+          ls -la /cloudbees/workspace/outputs/ || echo "No outputs directory"
+          
+          echo ""
+          echo "HTML files:"
+          find /cloudbees/workspace -name "*.html" -type f || echo "No HTML files found"
 
       - name: Upload to MinIO
         id: minio
@@ -160,13 +206,31 @@ jobs:
           set -euo pipefail
           
           echo "☁️ Uploading to MinIO..."
+          cd /cloudbees/workspace
           
-          # Find the report file
-          REPORT_FILE=$(find outputs -name "*.html" | head -n1)
+          # Find the report file using absolute path
+          REPORT_FILE=$(find /cloudbees/workspace/outputs -name "*.html" -type f | head -n1)
           if [ -z "$REPORT_FILE" ]; then
-            echo "❌ No HTML report found"
+            echo "❌ No HTML report found in workspace"
+            echo "Workspace structure:"
+            find /cloudbees/workspace -type f -name "*.html" || echo "No HTML files anywhere"
             exit 1
           fi
+          
+          echo "📄 Found report file: $REPORT_FILE"
+          
+          # Verify file exists and is readable
+          if [ ! -f "$REPORT_FILE" ]; then
+            echo "❌ Report file does not exist: $REPORT_FILE"
+            exit 1
+          fi
+          
+          if [ ! -r "$REPORT_FILE" ]; then
+            echo "❌ Report file is not readable: $REPORT_FILE"
+            exit 1
+          fi
+          
+          echo "📊 File size: $(wc -c < "$REPORT_FILE") bytes"
           
           # Install AWS CLI
           apk add --no-cache py3-pip
@@ -177,6 +241,7 @@ jobs:
           KEY="ci-radar/reports/${{ cloudbees.run_id }}-${SAFE_CONTROLLER}-${{ inputs.language }}.html"
 
           # Upload
+          echo "📤 Uploading $REPORT_FILE to s3://${{ vars.S3_BUCKET }}/${KEY}"
           aws s3 cp "$REPORT_FILE" "s3://${{ vars.S3_BUCKET }}/${KEY}" \
             --endpoint-url "$ENDPOINT" \
             --content-type text/html
@@ -202,7 +267,7 @@ jobs:
           url: ${{ steps.minio.outputs.minio-url }}
 
       - name: Publish CI Radar Report Artifact
-        uses: cloudbees-io/publish-artifact@v1
+        uses: cloudbees-io/publish-artifact@v2
         with:
           path: outputs/*.html
           name: ci-radar-report-${{ inputs.language }}
@@ -215,7 +280,6 @@ jobs:
 
             **Jenkins Controller:** ${{ inputs.jenkins_controller_url }}
             **Language:** ${{ inputs.language }}
-            **Analysis Date:** $(date '+%Y-%m-%d %H:%M:%S UTC')
 
             ### 📊 Report Details
             - **Artifact ID:** ${{ steps.register-artifact.outputs.artifact-id }}
