@@ -147,10 +147,8 @@ jobs:
           fi
 
           echo "✅ Analysis completed: $REPORT_FILE"
-          echo "report-path=$REPORT_FILE" >> "$CLOUDBEES_OUTPUTS"
 
       - name: Upload to MinIO
-        id: minio
         uses: docker://alpine:latest
         shell: sh
         env:
@@ -162,6 +160,13 @@ jobs:
           
           echo "☁️ Uploading to MinIO..."
           
+          # Find the report file
+          REPORT_FILE=$(find outputs -name "*.html" | head -n1)
+          if [ -z "$REPORT_FILE" ]; then
+            echo "❌ No HTML report found"
+            exit 1
+          fi
+          
           # Install AWS CLI
           apk add --no-cache py3-pip
           pip3 install awscli --no-cache-dir
@@ -171,7 +176,7 @@ jobs:
           KEY="ci-radar/reports/${{ cloudbees.run_id }}-${SAFE_CONTROLLER}-${{ inputs.language }}.html"
 
           # Upload
-          aws s3 cp "${{ steps.run.outputs.report-path }}" "s3://${{ vars.S3_BUCKET }}/${KEY}" \
+          aws s3 cp "$REPORT_FILE" "s3://${{ vars.S3_BUCKET }}/${KEY}" \
             --endpoint-url "$ENDPOINT" \
             --content-type text/html
 
@@ -180,7 +185,18 @@ jobs:
             --expires-in 604800 --endpoint-url "$ENDPOINT")
 
           echo "✅ Upload completed"
-          echo "presigned-url=$URL" >> "$CLOUDBEES_OUTPUTS"
+          echo ""
+          echo "🔗 MinIO URL (valid for 7 days):"
+          echo "$URL"
+          
+          # Save URL to workspace for next step
+          echo "$URL" > /cloudbees/workspace/minio-url.txt
+
+      - name: Publish HTML Report Artifact
+        uses: cloudbees-io/publish-artifact@v1
+        with:
+          path: outputs/*.html
+          name: ci-radar-report-${{ inputs.language }}
 
       - name: Display Results
         uses: docker://alpine:latest
@@ -195,5 +211,11 @@ jobs:
           echo "   Language: ${{ inputs.language }}"
           echo "   Run ID: ${{ cloudbees.run_id }}"
           echo ""
-          echo "🔗 Report URL (valid for 7 days):"
-          echo "${{ steps.minio.outputs.presigned-url }}"
+          echo "📦 Artifact published: ci-radar-report-${{ inputs.language }}"
+          echo ""
+          if [ -f "/cloudbees/workspace/minio-url.txt" ]; then
+            echo "🔗 MinIO Report URL (valid for 7 days):"
+            cat /cloudbees/workspace/minio-url.txt
+          else
+            echo "⚠️  MinIO URL not found"
+          fi
