@@ -149,6 +149,7 @@ jobs:
           echo "✅ Analysis completed: $REPORT_FILE"
 
       - name: Upload to MinIO
+        id: minio
         uses: docker://alpine:latest
         shell: sh
         env:
@@ -189,14 +190,48 @@ jobs:
           echo "🔗 MinIO URL (valid for 7 days):"
           echo "$URL"
           
-          # Save URL to workspace for next step
-          echo "$URL" > /cloudbees/workspace/minio-url.txt
+          # Output the URL for next steps
+          echo "minio-url=$URL" >> "$CLOUDBEES_OUTPUTS"
 
-      - name: Publish HTML Report Artifact
+      - name: Register CI Radar Report Artifact
+        id: register-artifact
+        uses: cloudbees-io/register-build-artifact@v2
+        with:
+          name: ci-radar-report
+          version: ${{ cloudbees.run_id }}-${{ inputs.language }}
+          url: ${{ steps.minio.outputs.minio-url }}
+
+      - name: Publish CI Radar Report Artifact
         uses: cloudbees-io/publish-artifact@v1
         with:
           path: outputs/*.html
           name: ci-radar-report-${{ inputs.language }}
+
+      - name: Publish Evidence
+        uses: cloudbees-io/publish-evidence-item@v1
+        with:
+          content: |-
+            ## 🎯 CI Radar Analysis Report
+
+            **Jenkins Controller:** ${{ inputs.jenkins_controller_url }}
+            **Language:** ${{ inputs.language }}
+            **Analysis Date:** $(date '+%Y-%m-%d %H:%M:%S UTC')
+
+            ### 📊 Report Details
+            - **Artifact ID:** ${{ steps.register-artifact.outputs.artifact-id }}
+            - **Report Version:** ${{ cloudbees.run_id }}-${{ inputs.language }}
+            - **Environment:** ${{ inputs.environment_name }}
+
+            ### 🔗 Access Report
+            [📄 View CI Radar Report](${{ steps.minio.outputs.minio-url }})
+
+            > Report is available for 7 days via MinIO presigned URL
+
+            ### ⚙️ Analysis Configuration
+            - **Prompt Type:** ${{ inputs.prompt && 'Custom' || 'Default' }}
+            - **Target Controller:** ${{ inputs.jenkins_controller_url }}
+            - **Run ID:** ${{ cloudbees.run_id }}
+          format: MARKDOWN
 
       - name: Display Results
         uses: docker://alpine:latest
@@ -210,12 +245,17 @@ jobs:
           echo "   Controller: ${{ inputs.jenkins_controller_url }}"
           echo "   Language: ${{ inputs.language }}"
           echo "   Run ID: ${{ cloudbees.run_id }}"
+          echo "   Artifact ID: ${{ steps.register-artifact.outputs.artifact-id }}"
           echo ""
-          echo "📦 Artifact published: ci-radar-report-${{ inputs.language }}"
+          echo "📦 Artifacts Published:"
+          echo "   • CloudBees Artifact: ci-radar-report-${{ inputs.language }}"
+          echo "   • Registered Artifact: ci-radar-report (v${{ cloudbees.run_id }}-${{ inputs.language }})"
           echo ""
-          if [ -f "/cloudbees/workspace/minio-url.txt" ]; then
-            echo "🔗 MinIO Report URL (valid for 7 days):"
-            cat /cloudbees/workspace/minio-url.txt
-          else
-            echo "⚠️  MinIO URL not found"
-          fi
+          echo "🔗 MinIO Report URL (valid for 7 days):"
+          echo "${{ steps.minio.outputs.minio-url }}"
+          echo ""
+          echo "✅ Evidence published to CloudBees platform"
+
+    outputs:
+      ARTIFACT_ID: ${{ steps.register-artifact.outputs.artifact-id }}
+      MINIO_URL: ${{ steps.minio.outputs.minio-url }}
