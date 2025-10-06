@@ -34,12 +34,15 @@ jobs:
       AWS_S3_FORCE_PATH_STYLE: "true"
 
     steps:
-      - name: Checkout
+      - name: Checkout CI Radar Repository
         uses: cloudbees-io/checkout@v1
+        with:
+          repository: lsa26/ci-radar
+          token: ${{ secrets.GITHUB_CHECK }}
 
       - name: Configure Environment
         uses: docker://alpine:latest
-        shell: sh  # Changé de bash à sh
+        shell: sh
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           JENKINS_USERNAME: ${{ secrets.GURU-USERNAME }}
@@ -52,7 +55,7 @@ jobs:
           echo "Environment: ${{ inputs.environment_name }}"
           echo "Username: $JENKINS_USERNAME"
           
-          # Validate Jenkins URL (compatible sh syntax)
+          # Validate Jenkins URL
           case "${{ inputs.jenkins_controller_url }}" in
             http://*|https://*)
               echo "✅ Valid URL format"
@@ -83,24 +86,63 @@ jobs:
           
           echo "✅ Environment configured successfully"
 
+      - name: Verify Repository Content
+        uses: docker://alpine:latest
+        shell: sh
+        run: |
+          echo "📁 Repository content:"
+          ls -la
+          echo ""
+          echo "📄 Checking for requirements.txt:"
+          if [ -f "requirements.txt" ]; then
+            echo "✅ requirements.txt found"
+            cat requirements.txt
+          else
+            echo "❌ requirements.txt not found"
+            echo "Available files:"
+            find . -name "*.txt" -o -name "*.py" | head -10
+          fi
+
       - name: Install Dependencies
         uses: docker://python:3.11
-        shell: bash  # Python image a bash
+        shell: bash
         run: |
           set -euo pipefail
+          echo "📦 Installing Python dependencies..."
           python -V
-          pip install --upgrade pip
-          pip install -r requirements.txt
+          
+          # Check if requirements.txt exists
+          if [ -f "requirements.txt" ]; then
+            echo "📋 Installing from requirements.txt..."
+            pip install --upgrade pip --no-cache-dir
+            pip install -r requirements.txt --no-cache-dir
+          else
+            echo "📋 Installing common dependencies..."
+            pip install --upgrade pip --no-cache-dir
+            pip install requests beautifulsoup4 openai python-dotenv --no-cache-dir
+          fi
+          
+          echo "✅ Dependencies installed"
 
       - name: Run CI Radar Analysis
         id: run
         uses: docker://python:3.11
-        shell: bash  # Python image a bash
+        shell: bash
         run: |
           set -euo pipefail
+          echo "🔍 Starting CI Radar analysis..."
+          
+          # Check main.py exists
+          if [ ! -f "main.py" ]; then
+            echo "❌ main.py not found"
+            echo "Available Python files:"
+            find . -name "*.py" | head -10
+            exit 1
+          fi
+          
           mkdir -p outputs
           
-          # Build arguments array
+          # Build arguments
           args="--format html --language ${{ inputs.language }}"
           
           # Smart prompt selection
@@ -120,16 +162,19 @@ jobs:
           REPORT_FILE=$(ls -1 outputs/*.html | head -n1 || true)
           if [ -z "$REPORT_FILE" ]; then
             echo "❌ No HTML report found in outputs/"
+            echo "Contents of outputs directory:"
+            ls -la outputs/ || echo "outputs directory doesn't exist"
             exit 1
           fi
 
           echo "✅ Analysis completed"
+          echo "📄 Report generated: $REPORT_FILE"
           echo "report-path=$REPORT_FILE" >> "$CLOUDBEES_OUTPUTS"
 
       - name: Upload to MinIO
         id: minio
         uses: docker://alpine:latest
-        shell: sh  # Alpine utilise sh
+        shell: sh
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_KEY }}
@@ -137,9 +182,11 @@ jobs:
         run: |
           set -euo pipefail
           
-          # Install AWS CLI in Alpine
-          apk add --no-cache curl py3-pip bash  # Installer bash aussi
-          pip3 install awscli
+          echo "☁️  Uploading report to MinIO..."
+          
+          # Install AWS CLI
+          apk add --no-cache curl py3-pip
+          pip3 install awscli --no-cache-dir
           
           # Create safe filename from URL
           SAFE_CONTROLLER=$(echo "${{ inputs.jenkins_controller_url }}" | sed 's|https\?://||' | sed 's|[^a-zA-Z0-9.-]|-|g')
@@ -157,7 +204,7 @@ jobs:
 
       - name: Display Results
         uses: docker://alpine:latest
-        shell: sh  # Alpine utilise sh
+        shell: sh
         run: |
           echo ""
           echo "🎉 CI RADAR ANALYSIS COMPLETED!"
