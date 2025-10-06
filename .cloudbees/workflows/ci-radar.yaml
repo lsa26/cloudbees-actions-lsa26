@@ -120,7 +120,7 @@ jobs:
 
       - name: Upload to MinIO
         id: minio
-        uses: docker://amazon/aws-cli:2
+        uses: docker://alpine:latest
         shell: bash
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY }}
@@ -128,6 +128,10 @@ jobs:
           ENDPOINT: ${{ vars.MINIO_ENDPOINT }}
         run: |
           set -euo pipefail
+          
+          # Install AWS CLI in Alpine
+          apk add --no-cache curl py3-pip
+          pip3 install awscli
           
           # Create safe filename from URL
           SAFE_CONTROLLER=$(echo "${{ inputs.jenkins_controller_url }}" | sed 's|https\?://||' | sed 's|[^a-zA-Z0-9.-]|-|g')
