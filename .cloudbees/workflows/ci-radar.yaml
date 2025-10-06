@@ -9,7 +9,7 @@ on:
         description: "Jenkins Controller URL (e.g., https://my-controller.cloudbees.com)"
         type: string
         required: true
-        default: "https://"
+        default: "https://core.cloudbees.guru/shared-demos/"
       environment_name:
         description: "Environment to use for credentials"
         type: choice
