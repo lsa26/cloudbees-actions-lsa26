@@ -9,7 +9,7 @@ on:
         description: "Jenkins Controller URL (e.g., https://my-controller.cloudbees.com)"
         type: string
         required: true
-        default: "https://core.cloudbees.guru/shared-demos/"
+        default: "https://core.cloudbees.guru/mlsme/"
       environment_name:
         description: "Environment to use for credentials"
         type: choice
@@ -34,7 +34,7 @@ on:
         description: "AI model name (e.g. gpt-4o-mini, claude-3-5-sonnet, llama3)"
         type: string
         required: false
-        default: "gpt-4o-mini"
+        default: "gpt-4"
       ollama_url:
         description: "Ollama base URL (e.g., http://localhost:11434) when provider=ollama"
         type: string
