@@ -19,12 +19,27 @@ on:
       language:
         description: "Report language"
         type: choice
-        options: ["en", "fr"]
+        options: ["en", "fr", "es"]  
         default: "en"
       prompt:
-        description: "Optional custom prompt (if empty, uses default prompt for selected language)"
+        description: "Optional custom prompt TEXT (raw string). If empty, auto prompt file is used."
         type: string
         required: false
+      ai_provider:
+        description: "AI provider (openai|anthropic|ollama)"
+        type: choice
+        options: ["openai", "anthropic", "ollama"]
+        default: "openai"
+      ai_model:
+        description: "AI model name (e.g. gpt-4o-mini, claude-3-5-sonnet, llama3)"
+        type: string
+        required: false
+        default: "gpt-4o-mini"
+      ollama_url:
+        description: "Ollama base URL (e.g., http://localhost:11434) when provider=ollama"
+        type: string
+        required: false
+        default: ""
 
 jobs:
   ci-radar:
@@ -45,50 +60,76 @@ jobs:
         uses: docker://alpine:latest
         shell: sh
         env:
+          
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           JENKINS_USERNAME: ${{ secrets.GURU-USERNAME }}
           JENKINS_PASSWORD: ${{ secrets.GURU-PASS }}
         run: |
           set -euo pipefail
-          
           echo "🔧 Configuring environment..."
           cd /cloudbees/workspace
-          
+
           echo "Controller URL: ${{ inputs.jenkins_controller_url }}"
           echo "Environment: ${{ inputs.environment_name }}"
-          
-          # Validate Jenkins URL
+          echo "Language: ${{ inputs.language }}"
+          echo "AI Provider: ${{ inputs.ai_provider }}"
+          echo "AI Model: ${{ inputs.ai_model }}"
+
           case "${{ inputs.jenkins_controller_url }}" in
-            http://*|https://*)
-              echo "✅ Valid URL format"
-              ;;
-            *)
-              echo "❌ Error: Jenkins URL must start with http:// or https://"
-              exit 1
-              ;;
+            http://*|https://*) echo "✅ Valid URL format" ;;
+            *) echo "❌ Error: Jenkins URL must start with http:// or https://"; exit 1 ;;
           esac
-          
-          # Validate credentials
-          if [ -z "$JENKINS_USERNAME" ] || [ -z "$JENKINS_PASSWORD" ]; then
+
+          if [ -z "${JENKINS_USERNAME:-}" ] || [ -z "${JENKINS_PASSWORD:-}" ]; then
             echo "❌ Jenkins credentials not found"
             exit 1
           fi
-          
-          if [ -z "$OPENAI_API_KEY" ]; then
-            echo "❌ OpenAI API key not found"
-            exit 1
-          fi
-          
-          # Create .env file in workspace
-          cat > /cloudbees/workspace/.env << EOF
+
+          # Provider checks
+          case "${{ inputs.ai_provider }}" in
+            openai)
+              if [ -z "${OPENAI_API_KEY:-}" ]; then
+                echo "❌ OPENAI_API_KEY not found"
+                exit 1
+              fi
+              ;;
+            anthropic)
+              if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+                echo "❌ ANTHROPIC_API_KEY not found"
+                exit 1
+              fi
+              ;;
+            ollama)
+              if [ -z "${{ inputs.ollama_url }}" ]; then
+                echo "❌ ollama_url is required when provider=ollama"
+                exit 1
+              fi
+              ;;
+          esac
+
+          # Crée .env
+          cat > .env << EOF
+          AI_LANGUAGE=${{ inputs.language }}
+          AI_PROVIDER=${{ inputs.ai_provider }}
+          AI_MODEL=${{ inputs.ai_model }}
+
           JENKINS_URL=${{ inputs.jenkins_controller_url }}
           JENKINS_USERNAME=$JENKINS_USERNAME
           JENKINS_TOKEN=$JENKINS_PASSWORD
-          OPENAI_API_KEY=$OPENAI_API_KEY
-          AI_MODEL=gpt-4
+
+          OPENAI_API_KEY=${OPENAI_API_KEY:-}
+          ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+          OLLAMA_URL=${{ inputs.ollama_url }}
           EOF
-          
-          echo "✅ Environment configured successfully"
+          echo "✅ .env created"
+
+          # Gestion du prompt : si 'inputs.prompt' (texte brut) est fourni,
+          # on l’écrit dans un fichier pour --prompt (car main.py attend un chemin)
+          if [ -n "${{ inputs.prompt }}" ]; then
+            printf "%s" "${{ inputs.prompt }}" > /cloudbees/workspace/_custom_prompt.txt
+            echo "✅ Custom prompt text written to _custom_prompt.txt"
+          fi
 
       - name: Install Dependencies and Run Analysis
         id: run
@@ -96,68 +137,53 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          
           cd /cloudbees/workspace
-          
+
           echo "📦 Installing Python dependencies..."
           python -V
           pip install --upgrade pip --no-cache-dir
-          
           if [ ! -f "requirements.txt" ]; then
             echo "❌ requirements.txt not found"
             exit 1
           fi
-          
           pip install -r requirements.txt --no-cache-dir
           echo "✅ Dependencies installed"
-          
-          echo ""
+
           echo "🔍 Starting CI Radar analysis..."
-          
+
           if [ ! -f "main.py" ]; then
             echo "❌ main.py not found"
             exit 1
           fi
-          
           if [ ! -f ".env" ]; then
             echo "❌ .env file not found"
             exit 1
           fi
-          
           mkdir -p outputs
-          
-          # Build arguments
+
           args="--format html --language ${{ inputs.language }}"
-          
-          # Smart prompt selection
-          if [ -n "${{ inputs.prompt }}" ]; then
-            args="$args --prompt '${{ inputs.prompt }}'"
+
+          # 1) Si *_custom_prompt.txt* existe → priorité
+          if [ -f "_custom_prompt.txt" ]; then
+            args="$args --prompt _custom_prompt.txt"
           else
-            if [ "${{ inputs.language }}" = "fr" ]; then
-              if [ -f "prompts/prompt_expert_fr.txt" ]; then
-                args="$args --prompt prompts/prompt_expert_fr.txt"
-              else
-                echo "⚠️ French prompt file not found, using default"
-              fi
+            # 2) Sinon, on utilise le prompt multi-langues auto si présent
+            if [ -f "prompts/prompt_expert_auto.txt" ]; then
+              args="$args --prompt prompts/prompt_expert_auto.txt"
             else
-              if [ -f "prompts/prompt_expert_en.txt" ]; then
-                args="$args --prompt prompts/prompt_expert_en.txt"
-              else
-                echo "⚠️ English prompt file not found, using default"
-              fi
+              echo "⚠️ prompts/prompt_expert_auto.txt not found — fallback to embedded prompt"
             fi
           fi
-          
+
           echo "🚀 Running: python main.py $args"
           eval "python main.py $args"
 
-          REPORT_FILE=$(find /cloudbees/workspace/outputs -name "*.html" | head -n1)
+          REPORT_FILE=$(find outputs -name "*.html" -type f | head -n1)
           if [ -z "$REPORT_FILE" ]; then
             echo "❌ No HTML report found"
-            ls -la /cloudbees/workspace/outputs/ || echo "outputs directory not found"
+            ls -la outputs || true
             exit 1
           fi
-
           echo "✅ Analysis completed: $REPORT_FILE"
 
       - name: Upload to MinIO
@@ -170,41 +196,31 @@ jobs:
           ENDPOINT: ${{ vars.MINIO_ENDPOINT }}
         run: |
           set -euo pipefail
-          
-          echo "☁️ Uploading to MinIO..."
           cd /cloudbees/workspace
-          
-          # Find the report file
-          REPORT_FILE=$(find /cloudbees/workspace/outputs -name "*.html" -type f | head -n1)
+
+          REPORT_FILE=$(find outputs -name "*.html" -type f | head -n1)
           if [ -z "$REPORT_FILE" ]; then
             echo "❌ No HTML report found"
             exit 1
           fi
-          
           echo "📄 Found report file: $REPORT_FILE"
-          
-          # Install AWS CLI
+
           pip install awscli --no-cache-dir
-          
-          # Create safe filename
+
           SAFE_CONTROLLER=$(echo "${{ inputs.jenkins_controller_url }}" | sed 's|https\?://||' | sed 's|[^a-zA-Z0-9.-]|-|g')
           KEY="ci-radar/reports/${{ cloudbees.run_id }}-${SAFE_CONTROLLER}-${{ inputs.language }}.html"
 
-          # Upload to MinIO
           echo "📤 Uploading to s3://${{ vars.S3_BUCKET }}/${KEY}"
           aws s3 cp "$REPORT_FILE" "s3://${{ vars.S3_BUCKET }}/${KEY}" \
             --endpoint-url "$ENDPOINT" \
             --content-type text/html
 
-          # Generate presigned URL (7 days)
-          URL=$(aws s3 presign "s3://${{ vars.S3_BUCKET }}/${KEY}" \
-            --expires-in 604800 --endpoint-url "$ENDPOINT")
-
+          URL=$(aws s3 presign "s3://${{ vars.S3_BUCKET }}/${KEY}" --expires-in 604800 --endpoint-url "$ENDPOINT")
           echo "✅ Upload completed"
           echo "🔗 MinIO URL: $URL"
-          
-          # CORRECTION: Utiliser printf pour éviter les caractères de nouvelle ligne
-          printf "%s" "$URL" > $CLOUDBEES_OUTPUTS/minio-url
+
+          # Utiliser printf pour éviter \n final
+          printf "%s" "$URL" > "$CLOUDBEES_OUTPUTS/minio-url"
 
       - name: Register CI Radar Report Artifact
         id: register-artifact
@@ -226,14 +242,16 @@ jobs:
             - **Environment:** ${{ inputs.environment_name }}
             - **Run ID:** ${{ cloudbees.run_id }}
             - **Artifact ID:** ${{ steps.register-artifact.outputs.artifact-id }}
+            - **AI Provider:** ${{ inputs.ai_provider }}
+            - **AI Model:** ${{ inputs.ai_model }}
 
             ### 🔗 Access Report
             [📄 View CI Radar Report](${{ steps.minio.outputs.minio-url }})
 
-            > 📅 Report is available for 7 days via MinIO presigned URL
+            > 📅 Report is available via MinIO presigned URL
 
             ### ⚙️ Configuration
-            - **Prompt Type:** ${{ inputs.prompt && 'Custom' || 'Default' }}
+            - **Prompt Type:** ${{ inputs.prompt && 'Custom (inline)' || 'Auto (file)' }}
             - **Report Version:** ${{ cloudbees.run_id }}-${{ inputs.language }}
           format: MARKDOWN
 
@@ -248,15 +266,16 @@ jobs:
           echo "📊 Analysis Details:"
           echo "   🎯 Controller: ${{ inputs.jenkins_controller_url }}"
           echo "   🗣️ Language: ${{ inputs.language }}"
-          echo "   🆔 Run ID: ${{ cloudbees.run_id }}"
-          echo "   📦 Artifact ID: ${{ steps.register-artifact.outputs.artifact-id }}"
-          echo "   🌍 Environment: ${{ inputs.environment_name }}"
+          echo "   🤖 Provider:  ${{ inputs.ai_provider }}"
+          echo "   🧠 Model:     ${{ inputs.ai_model }}"
+          echo "   🆔 Run ID:    ${{ cloudbees.run_id }}"
+          echo "   📦 Artifact:  ${{ steps.register-artifact.outputs.artifact-id }}"
+          echo "   🌍 Env:       ${{ inputs.environment_name }}"
           echo ""
-          echo "🔗 Report Access:"
+          echo "🔗 Report:"
           echo "${{ steps.minio.outputs.minio-url }}"
           echo ""
-          echo "✅ Report registered as artifact in CloudBees platform"
-          echo "✅ Evidence published for traceability"
+          echo "✅ Artifact registered & Evidence published"
 
     outputs:
       ARTIFACT_ID: ${{ steps.register-artifact.outputs.artifact-id }}
